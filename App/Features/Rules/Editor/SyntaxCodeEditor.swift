@@ -47,7 +47,8 @@ struct SyntaxCodeEditor: UIViewRepresentable {
         let bar = UIToolbar()
         bar.tintColor = UIColor(ReadingTheme.accent)
         bar.sizeToFit()
-        bar.items = [
+        // Built in typed parts: Xcode 26.6 times out type-checking the single concatenated literal.
+        let editingItems: [UIBarButtonItem] = [
             UIBarButtonItem(image: UIImage(systemName: "magnifyingglass"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view, coordinator = context.coordinator] _ in
                 guard let view else { return }
                 if #available(iOS 16.0, *) { view.findInteraction?.presentFindNavigator(showingReplace: true) }
@@ -55,10 +56,17 @@ struct SyntaxCodeEditor: UIViewRepresentable {
             }),
             UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.undoManager?.undo() }),
             UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.forward"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.undoManager?.redo() }),
-        ] + ["@", "$", "{}", "[]", "##", "\n", "\t"].map { symbol in
-            UIBarButtonItem(title: symbol == "\n" ? "↵" : symbol == "\t" ? "⇥" : symbol,
-                primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.insertText(symbol) })
-        } + [UIBarButtonItem(systemItem: .flexibleSpace), UIBarButtonItem(title: "完成", primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.resignFirstResponder() })]
+        ]
+        let symbols: [String] = ["@", "$", "{}", "[]", "##", "\n", "\t"]
+        let symbolItems: [UIBarButtonItem] = symbols.map { symbol in
+            let title: String = symbol == "\n" ? "↵" : symbol == "\t" ? "⇥" : symbol
+            return UIBarButtonItem(title: title, primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.insertText(symbol) })
+        }
+        let trailingItems: [UIBarButtonItem] = [
+            UIBarButtonItem(systemItem: .flexibleSpace),
+            UIBarButtonItem(title: "完成", primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.resignFirstResponder() }),
+        ]
+        bar.items = editingItems + symbolItems + trailingItems
         view.inputAccessoryView = bar
         view.text = text
         context.coordinator.highlight(view)
