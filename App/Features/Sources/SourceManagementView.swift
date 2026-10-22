@@ -16,6 +16,7 @@ struct SourceManagementView: View {
     @State private var searchText = ""
     @State private var isSelecting = false
     @State private var selectedSourceIDs = Set<String>()
+    @State private var confirmsBatchDelete = false
     @AppStorage("bookSourceSort") private var sortMode = "manual"
     @AppStorage("bookSourceSortDescending") private var sortDescending = false
 
@@ -178,21 +179,33 @@ struct SourceManagementView: View {
                         else { selectedSourceIDs = Set(filteredSources.map(\.id)) }
                     }
                     Spacer()
-                    Button("分组", systemImage: "folder") { showsBatchGroups = true }
-                        .disabled(selectedSourceIDs.isEmpty)
-                    Button("启用", systemImage: "checkmark.circle") {
+                    batchButton("分组", systemImage: "folder") { showsBatchGroups = true }
+                    batchButton("启用", systemImage: "checkmark.circle") {
                         Task { await library.setEnabled(true, for: selectedSourceIDs) }
                     }
-                    .disabled(selectedSourceIDs.isEmpty)
-                    Button("停用", systemImage: "pause.circle") {
+                    batchButton("停用", systemImage: "pause.circle") {
                         Task { await library.setEnabled(false, for: selectedSourceIDs) }
                     }
-                    .disabled(selectedSourceIDs.isEmpty)
+                    batchButton("删除", systemImage: "trash", role: .destructive) { confirmsBatchDelete = true }
                 }
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 18).padding(.vertical, 12)
                 .background(.ultraThinMaterial)
             }
+        }
+        .confirmationDialog(
+            "删除 \(selectedSourceIDs.count) 个书源？",
+            isPresented: $confirmsBatchDelete,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                let ids = selectedSourceIDs
+                selectedSourceIDs.removeAll()
+                isSelecting = false
+                Task { await library.remove(sourceIDs: ids) }
+            }
+        } message: {
+            Text("删除后无法恢复，如需再次使用请重新导入。")
         }
         .sheet(isPresented: $showsNewSource) { SourceEditorView().environmentObject(library) }
         .sheet(isPresented: $showsQRImporter) {
@@ -220,6 +233,24 @@ struct SourceManagementView: View {
                 showsImporter = false
             }
         }
+    }
+
+    /// Icon-over-caption keeps five selection actions on one row on narrow phones.
+    private func batchButton(
+        _ title: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: systemImage).font(.body)
+                Text(title).font(.caption2)
+            }
+            .frame(minWidth: 36)
+        }
+        .foregroundStyle(selectedSourceIDs.isEmpty ? Color.secondary : role == .destructive ? Color.red : ReadingTheme.accent)
+        .disabled(selectedSourceIDs.isEmpty)
     }
 
     private func presentFileImporter() {
