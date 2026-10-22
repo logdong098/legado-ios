@@ -9,6 +9,15 @@ struct SourceLoginView: View {
     @State private var isChecking = false
 
     var body: some View {
+        // Legado shows the form dialog whenever loginUi exists; loginUrl is then JavaScript, not a page.
+        if SourceLoginUI.fields(from: source.loginUi).isEmpty {
+            webLogin
+        } else {
+            SourceLoginFormView(source: source)
+        }
+    }
+
+    private var webLogin: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "lock.shield.fill").foregroundStyle(ReadingTheme.accent)
@@ -57,6 +66,102 @@ struct SourceLoginView: View {
               let data = value.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         return object.mapValues { String(describing: $0) }
+    }
+}
+
+private struct SourceLoginFormView: View {
+    let source: BookSource
+    private let fields: [SourceLoginField]
+    @State private var form: [String: String]
+    @State private var messages: [String] = []
+    @State private var runningFieldID: Int?
+
+    init(source: BookSource) {
+        self.source = source
+        fields = SourceLoginUI.fields(from: source.loginUi)
+        _form = State(initialValue: SourceLoginUI.savedForm(for: source))
+    }
+
+    var body: some View {
+        Form {
+            let inputs = fields.filter { $0.kind != .button }
+            if !inputs.isEmpty {
+                Section {
+                    ForEach(inputs) { field in
+                        if field.kind == .password {
+                            SecureField(field.name, text: binding(for: field))
+                        } else {
+                            TextField(field.name, text: binding(for: field))
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                    }
+                } header: {
+                    Text("账户信息")
+                } footer: {
+                    Text("点击任一按钮时会先保存这里填写的内容。")
+                }
+            }
+            Section("操作") {
+                ForEach(fields.filter { $0.kind == .button }) { field in
+                    Button { run(field) } label: {
+                        HStack {
+                            Text(field.name)
+                            Spacer()
+                            if runningFieldID == field.id { ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(field.action == nil || runningFieldID != nil)
+                }
+            }
+            if !messages.isEmpty {
+                Section("书源消息") {
+                    ForEach(Array(messages.enumerated().reversed()), id: \.offset) { _, message in
+                        Text(message).font(.footnote).textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .navigationTitle("登录 · \(source.bookSourceName)")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("保存") {
+                    SourceLoginUI.save(form, for: source)
+                    append("已保存账户信息")
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: JavaScriptMessageCenter.toastNotification).receive(on: RunLoop.main)) { note in
+            if let message = note.userInfo?["message"] as? String { append(message) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: JavaScriptMessageCenter.openURLNotification).receive(on: RunLoop.main)) { note in
+            if let url = note.userInfo?["url"] as? URL { UIApplication.shared.open(url) }
+        }
+    }
+
+    private func binding(for field: SourceLoginField) -> Binding<String> {
+        Binding(get: { form[field.name] ?? "" }, set: { form[field.name] = $0 })
+    }
+
+    private func run(_ field: SourceLoginField) {
+        guard let action = field.action else { return }
+        runningFieldID = field.id
+        let snapshot = form
+        Task {
+            do {
+                let value = try await SourceLoginUI.run(action: action, source: source, form: snapshot)
+                if !value.isEmpty, !["undefined", "null"].contains(value) { append("\(field.name)：\(value)") }
+            } catch {
+                append("\(field.name) 执行失败：\(error.localizedDescription)")
+            }
+            runningFieldID = nil
+        }
+    }
+
+    private func append(_ message: String) {
+        messages.append(message)
+        if messages.count > 30 { messages.removeFirst(messages.count - 30) }
     }
 }
 

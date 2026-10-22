@@ -182,6 +182,8 @@ private final class JavaScriptRedirectBlocker: NSObject, URLSessionTaskDelegate,
 
 public struct JavaScriptRuleEvaluator: Sendable {
     public var maximumScriptLength: Int
+    /// Aggregate sources ship shared libraries far larger than a single rule.
+    public var maximumLibraryLength: Int
     public var maximumResultLength: Int
     private let networkLoader: any JavaScriptNetworkLoading
     private let urlBuilder: LegadoURLBuilder
@@ -194,11 +196,13 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
     public init(
         maximumScriptLength: Int = 64 * 1_024,
+        maximumLibraryLength: Int = 1_024 * 1_024,
         maximumResultLength: Int = 2 * 1_024 * 1_024,
         networkLoader: any JavaScriptNetworkLoading = SynchronousJavaScriptNetworkLoader(),
         urlBuilder: LegadoURLBuilder = .init()
     ) {
         self.maximumScriptLength = maximumScriptLength
+        self.maximumLibraryLength = maximumLibraryLength
         self.maximumResultLength = maximumResultLength
         self.networkLoader = networkLoader
         self.urlBuilder = urlBuilder
@@ -236,6 +240,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         installSource(in: context, source: executionContext.source, variables: box)
         installBook(in: context, book: executionContext.book)
         installChapter(in: context, chapter: executionContext.chapter)
+        installCache(in: context)
         context.evaluateScript("""
             (function () {
               var nativeParse = JSON.parse;
@@ -252,7 +257,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
         if let library = executionContext.source?.jsLib?.trimmingCharacters(in: .whitespacesAndNewlines),
            !library.isEmpty {
-            guard library.utf8.count <= maximumScriptLength else {
+            guard library.utf8.count <= maximumLibraryLength else {
                 throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
             try rejectUnboundedExecution(library)
@@ -495,6 +500,15 @@ public struct JavaScriptRuleEvaluator: Sendable {
             DiagnosticLog.shared.record(category: "JS", message: String(describing: value ?? "null"))
             return value
         }
+        let toastValue: @convention(block) (Any?) -> Any? = { value in
+            let message = Self.stringify(value)
+            DiagnosticLog.shared.record(category: "JS", message: message)
+            JavaScriptMessageCenter.toast(message)
+            return value
+        }
+        let openURL: @convention(block) (String, String) -> Bool = { url, title in
+            JavaScriptMessageCenter.openURL(url, title: title)
+        }
         context.setObject(logValue, forKeyedSubscript: "__legadoLog" as NSString)
         context.evaluateScript("var console = { log: function() { __legadoLog(Array.prototype.join.call(arguments, ' ')); }, warn: function() { __legadoLog(Array.prototype.join.call(arguments, ' ')); }, error: function() { __legadoLog(Array.prototype.join.call(arguments, ' ')); } };")
         let urlEncode: @convention(block) (String) -> String = {
@@ -625,7 +639,9 @@ public struct JavaScriptRuleEvaluator: Sendable {
         java?.setObject(getTag, forKeyedSubscript: "getTag" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "log" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "logType" as NSString)
-        java?.setObject(logValue, forKeyedSubscript: "toast" as NSString)
+        java?.setObject(toastValue, forKeyedSubscript: "toast" as NSString)
+        java?.setObject(toastValue, forKeyedSubscript: "longToast" as NSString)
+        java?.setObject(openURL, forKeyedSubscript: "__openURL" as NSString)
         java?.setObject(urlEncode, forKeyedSubscript: "encodeURI" as NSString)
         java?.setObject(getCookieHeader, forKeyedSubscript: "getCookieHeader" as NSString)
         java?.setObject(getCookieValue, forKeyedSubscript: "__getCookieValue" as NSString)
@@ -696,6 +712,19 @@ public struct JavaScriptRuleEvaluator: Sendable {
                 });
               };
               java.clearTtsCache = function () { return true; };
+              // Only http(s) pages can leave the app; inline HTML pages need Legado's in-app browser.
+              java.startBrowser = function (url, title) {
+                java.__openURL(String(url == null ? '' : url), String(title == null ? '' : title));
+              };
+              java.showReadingBrowser = java.startBrowser;
+              java.startBrowserAwait = function (url, title) {
+                java.startBrowser(url, title);
+                return {
+                  body: function () { return ''; },
+                  code: function () { return 0; },
+                  url: function () { return String(url); }
+                };
+              };
             })();
             """)
     }
@@ -793,6 +822,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
                 } else if let bodyScript = prepared.bodyJavaScript {
                     let transformed = try JavaScriptRuleEvaluator(
                         maximumScriptLength: maximumScriptLength,
+                        maximumLibraryLength: maximumLibraryLength,
                         maximumResultLength: maximumResultLength,
                         networkLoader: networkLoader,
                         urlBuilder: urlBuilder
@@ -848,6 +878,16 @@ public struct JavaScriptRuleEvaluator: Sendable {
             BookSourceRuntimeStore.shared.put(sourceID: sourceID, key: "loginInfo", value: value)
             return value
         }
+        let getLoginInfoText: @convention(block) () -> String = {
+            BookSourceRuntimeStore.shared.get(sourceID: sourceID, key: "loginInfo")
+        }
+        let getVariable: @convention(block) () -> String = {
+            BookSourceRuntimeStore.shared.get(sourceID: sourceID, key: "sourceVariable")
+        }
+        let setVariable: @convention(block) (Any?) -> Void = { value in
+            let text = value is NSNull ? "" : Self.stringify(value)
+            BookSourceRuntimeStore.shared.put(sourceID: sourceID, key: "sourceVariable", value: text)
+        }
         let getHeaderMap: @convention(block) (Bool) -> [String: String] = { includeLogin in
             var headers: [String: String] = [:]
             if let raw = source?.header?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -867,6 +907,9 @@ public struct JavaScriptRuleEvaluator: Sendable {
         object?.setObject(putLoginHeader, forKeyedSubscript: "putLoginHeader" as NSString)
         object?.setObject(getLoginInfo, forKeyedSubscript: "__getLoginInfoMap" as NSString)
         object?.setObject(putLoginInfo, forKeyedSubscript: "putLoginInfo" as NSString)
+        object?.setObject(getLoginInfoText, forKeyedSubscript: "getLoginInfo" as NSString)
+        object?.setObject(getVariable, forKeyedSubscript: "getVariable" as NSString)
+        object?.setObject(setVariable, forKeyedSubscript: "setVariable" as NSString)
         object?.setObject(getHeaderMap, forKeyedSubscript: "getHeaderMap" as NSString)
         object?.setObject(source?.bookSourceName ?? "", forKeyedSubscript: "bookSourceName" as NSString)
         object?.setObject(source?.bookSourceUrl ?? "", forKeyedSubscript: "bookSourceUrl" as NSString)
@@ -910,11 +953,23 @@ public struct JavaScriptRuleEvaluator: Sendable {
         let getBookURL: @convention(block) () -> String = { book?.bookUrl ?? "" }
         let getCoverURL: @convention(block) () -> String = { book?.coverUrl ?? "" }
         let getTotal: @convention(block) () -> Int = { book?.totalChapterNum ?? 0 }
+        let variableScope = "__book__\(book?.bookUrl ?? "")"
+        let getVariable: @convention(block) (String) -> String = { key in
+            let stored = BookSourceRuntimeStore.shared.get(sourceID: variableScope, key: key)
+            if !stored.isEmpty { return stored }
+            return Self.headerMap(book?.variable)[key] ?? ""
+        }
+        let putVariable: @convention(block) (String, Any?) -> Void = { key, value in
+            let text = value is NSNull ? "" : Self.stringify(value)
+            BookSourceRuntimeStore.shared.put(sourceID: variableScope, key: key, value: text)
+        }
         object?.setObject(getName, forKeyedSubscript: "getName" as NSString)
         object?.setObject(getAuthor, forKeyedSubscript: "getAuthor" as NSString)
         object?.setObject(getBookURL, forKeyedSubscript: "getBookUrl" as NSString)
         object?.setObject(getCoverURL, forKeyedSubscript: "getCoverUrl" as NSString)
         object?.setObject(getTotal, forKeyedSubscript: "getTotalChapterNum" as NSString)
+        object?.setObject(getVariable, forKeyedSubscript: "__getVariable" as NSString)
+        object?.setObject(putVariable, forKeyedSubscript: "putVariable" as NSString)
         object?.setObject(book?.name ?? "", forKeyedSubscript: "name" as NSString)
         object?.setObject(book?.author ?? "", forKeyedSubscript: "author" as NSString)
         object?.setObject(book?.bookUrl ?? "", forKeyedSubscript: "bookUrl" as NSString)
@@ -934,6 +989,44 @@ public struct JavaScriptRuleEvaluator: Sendable {
         object?.setObject(book?.wordCount ?? "", forKeyedSubscript: "wordCount" as NSString)
         object?.setObject(book?.variable ?? "", forKeyedSubscript: "variable" as NSString)
         context.setObject(object, forKeyedSubscript: "book" as NSString)
+        context.evaluateScript("""
+            (function () {
+              book.getVariable = function (key) {
+                return arguments.length === 0 || key == null ? book.variable : book.__getVariable(String(key));
+              };
+            })();
+            """)
+    }
+
+    /// Legado's `cache` object: persistent entries with an optional lifetime in seconds,
+    /// plus an in-memory map shared by every rule until the app exits.
+    private func installCache(in context: JSContext) {
+        let object = JSValue(newObjectIn: context)
+        let get: @convention(block) (String) -> Any? = { key in
+            // Legado returns null for a miss; a bare nil would surface as undefined.
+            PersistentRuntimeCache.shared.get("jscache_\(key)") ?? NSNull()
+        }
+        let put: @convention(block) (String, Any?, Any?) -> Void = { key, value, seconds in
+            let lifetime = Int64(Self.number(seconds) ?? 0)
+            let deadline = lifetime > 0 ? Int64(Date().timeIntervalSince1970 * 1_000) + lifetime * 1_000 : 0
+            PersistentRuntimeCache.shared.put("jscache_\(key)", value: Self.stringify(value), deadline: deadline)
+        }
+        let delete: @convention(block) (String) -> Void = { key in
+            // An already-expired deadline hides the entry from every later read.
+            PersistentRuntimeCache.shared.put("jscache_\(key)", value: "", deadline: 1)
+        }
+        let getFromMemory: @convention(block) (String) -> Any? = { JavaScriptMemoryCache.shared.get($0) ?? NSNull() }
+        let putMemory: @convention(block) (String, Any?) -> Void = { key, value in
+            JavaScriptMemoryCache.shared.put(key, value: value is NSNull ? nil : Self.stringify(value))
+        }
+        let deleteMemory: @convention(block) (String) -> Void = { JavaScriptMemoryCache.shared.put($0, value: nil) }
+        object?.setObject(get, forKeyedSubscript: "get" as NSString)
+        object?.setObject(put, forKeyedSubscript: "put" as NSString)
+        object?.setObject(delete, forKeyedSubscript: "delete" as NSString)
+        object?.setObject(getFromMemory, forKeyedSubscript: "getFromMemory" as NSString)
+        object?.setObject(putMemory, forKeyedSubscript: "putMemory" as NSString)
+        object?.setObject(deleteMemory, forKeyedSubscript: "deleteMemory" as NSString)
+        context.setObject(object, forKeyedSubscript: "cache" as NSString)
     }
 
     private func installChapter(in context: JSContext, chapter: BookChapter?) {
@@ -1364,5 +1457,47 @@ public final class BookSourceRuntimeStore: @unchecked Sendable {
 
     private func persistentKey(sourceID: String, key: String) -> String {
         key == "loginHeader" ? "loginHeader_\(sourceID)" : "v_\(sourceID)_\(key)"
+    }
+}
+
+final class JavaScriptMemoryCache: @unchecked Sendable {
+    static let shared = JavaScriptMemoryCache()
+
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
+
+    func get(_ key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    func put(_ key: String, value: String?) {
+        lock.lock()
+        values[key] = value
+        lock.unlock()
+    }
+}
+
+/// Bridges `java.toast` and `java.startBrowser` from rule scripts to whichever screen is listening.
+public enum JavaScriptMessageCenter {
+    public static let toastNotification = Notification.Name("LegadoJavaScriptToast")
+    public static let openURLNotification = Notification.Name("LegadoJavaScriptOpenURL")
+
+    static func toast(_ message: String) {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        NotificationCenter.default.post(name: toastNotification, object: nil, userInfo: ["message": text])
+    }
+
+    @discardableResult
+    static func openURL(_ value: String, title: String) -> Bool {
+        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            toast("暂不支持打开书源内置网页：\(title.isEmpty ? "未命名页面" : title)")
+            return false
+        }
+        NotificationCenter.default.post(name: openURLNotification, object: nil, userInfo: ["url": url, "title": title])
+        return true
     }
 }

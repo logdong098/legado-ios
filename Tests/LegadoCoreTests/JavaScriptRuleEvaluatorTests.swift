@@ -266,6 +266,75 @@ struct JavaScriptRuleEvaluatorTests {
 
         #expect(value.value.stringValue == "lib:ok")
     }
+    @Test func loadsAggregateSourceLibraryBeyondSingleRuleLimit() throws {
+        var source = BookSource(bookSourceUrl: "https://large-lib.example.test", bookSourceName: "聚合源")
+        let padding = "// " + String(repeating: "x", count: 150 * 1_024) + "\n"
+        source.jsLib = padding + "let hosts = ['https://a.test']; function BaseUrl() { return hosts[0]; }"
+
+        let value = try JavaScriptRuleEvaluator().evaluate(
+            script: "BaseUrl()",
+            result: .null,
+            executionContext: .init(source: source)
+        )
+
+        #expect(value.value.stringValue == "https://a.test")
+    }
+
+    @Test func persistsSourceAndBookVariablesLikeLegado() throws {
+        let source = BookSource(bookSourceUrl: "https://source-variable-\(UUID().uuidString).test", bookSourceName: "源变量")
+        let book = Book(bookUrl: "https://book.test/\(UUID().uuidString)", name: "变量书")
+        let evaluator = JavaScriptRuleEvaluator()
+
+        _ = try evaluator.evaluate(
+            script: "source.setVariable(JSON.stringify({ 线路: 'v2' })); book.putVariable('custom', 'abc')",
+            result: .null,
+            executionContext: .init(source: source, book: book)
+        )
+        let value = try evaluator.evaluate(
+            script: "JSON.parse(source.getVariable()).线路 + ':' + book.getVariable('custom') + ':' + String(book.getVariable('missing'))",
+            result: .null,
+            executionContext: .init(source: source, book: book)
+        )
+
+        #expect(value.value.stringValue == "v2:abc:")
+    }
+
+    @Test func providesCacheLongToastAndBrowserFallbacks() throws {
+        let key = "cache-\(UUID().uuidString)"
+        let value = try JavaScriptRuleEvaluator().evaluate(
+            script: """
+            java.longToast('提示');
+            cache.put('\(key)', 'disk');
+            cache.putMemory('\(key)', 'memory');
+            var before = cache.get('\(key)') + ':' + cache.getFromMemory('\(key)');
+            cache.delete('\(key)');
+            cache.deleteMemory('\(key)');
+            java.startBrowserAwait('data:text/html,<p>x</p>', '设置').body();
+            before + ':' + cache.get('\(key)') + ':' + cache.getFromMemory('\(key)');
+            """,
+            result: .null,
+            executionContext: .init()
+        )
+
+        #expect(value.value.stringValue == "disk:memory:null:null")
+    }
+
+    @Test func runsLoginUIButtonsWithLoginScriptAndForm() async throws {
+        var source = BookSource(bookSourceUrl: "https://login-ui-\(UUID().uuidString).test", bookSourceName: "表单登录源")
+        source.loginUi = #"[{"name":"邮箱","type":"text"},{"name":"密码","type":"password"},{"name":"登录","type":"button","action":"login(true)"},{"name":"说明"}]"#
+        source.loginUrl = "function login(flag) { return flag + ':' + result.邮箱 + ':' + JSON.parse(source.getLoginInfo()).密码; }"
+
+        let fields = SourceLoginUI.fields(from: source.loginUi)
+        let value = try await SourceLoginUI.run(action: "login(true)", source: source, form: ["邮箱": "a@b.c", "密码": "pw"])
+
+        #expect(fields.map(\.kind) == [.text, .password, .button, .text])
+        #expect(fields[2].action == "login(true)")
+        #expect(value == "true:a@b.c:pw")
+        #expect(SourceLoginUI.savedForm(for: source) == ["邮箱": "a@b.c", "密码": "pw"])
+        #expect(SourceLoginUI.loginScript(from: "<js>login()</js>") == "login()")
+        #expect(SourceLoginUI.loginScript(from: "@js:login()") == "login()")
+    }
+
     @Test func providesAjaxAndConnectWithLegadoURLOptions() throws {
         var source = BookSource(bookSourceUrl: "https://js-network.example.test", bookSourceName: "JS 网络源")
         source.header = #"{"X-Source":"source"}"#

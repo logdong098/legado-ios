@@ -1,0 +1,40 @@
+name: Unsigned IPA
+
+on:
+  push:
+    branches: [feat/guangyu-aggregate-source]
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Run LegadoCore tests
+        run: swift test --disable-sandbox
+
+  ipa:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Build iOS app without signing
+        run: |
+          xcodebuild -project Legado.xcodeproj -scheme Legado -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        run: |
+          app=$(find DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          mkdir -p Payload && cp -R "$app" Payload/
+          zip -qry "legado-ios-$(git rev-parse --short HEAD)-unsigned.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legado-ios-unsigned-ipa
+          path: '*.ipa'
+          if-no-files-found: error

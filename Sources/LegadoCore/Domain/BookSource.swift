@@ -256,3 +256,71 @@ private extension KeyedDecodingContainer {
         return Int64(try decode(String.self, forKey: key))
     }
 }
+
+/// Legado's form-style login (`loginUi`): fields are saved as the source's login info, and each
+/// button runs `loginUrl` as JavaScript followed by the button's action, with `result` set to the form.
+public struct SourceLoginField: Identifiable, Hashable, Sendable {
+    public enum Kind: String, Sendable { case text, password, button }
+
+    public var id: Int
+    public var name: String
+    public var kind: Kind
+    public var action: String?
+
+    public init(id: Int, name: String, kind: Kind, action: String? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.action = action
+    }
+}
+
+public enum SourceLoginUI {
+    public static func fields(from raw: String?) -> [SourceLoginField] {
+        guard let data = raw?.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return items.enumerated().compactMap { index, item in
+            let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else { return nil }
+            let kind = SourceLoginField.Kind(rawValue: (item["type"] as? String ?? "text").lowercased()) ?? .text
+            let action = (item["action"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return SourceLoginField(id: index, name: name, kind: kind, action: action?.isEmpty == false ? action : nil)
+        }
+    }
+
+    /// Same unwrapping as Legado's `BookSource.getLoginJs()`.
+    public static func loginScript(from loginURL: String?) -> String {
+        let value = loginURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if value.hasPrefix("@js:") { return String(value.dropFirst(4)) }
+        if value.hasPrefix("<js>"), let end = value.range(of: "</", options: .backwards) {
+            return String(value[value.index(value.startIndex, offsetBy: 4)..<end.lowerBound])
+        }
+        return value
+    }
+
+    public static func savedForm(for source: BookSource) -> [String: String] {
+        let text = BookSourceRuntimeStore.shared.get(sourceID: source.bookSourceUrl, key: "loginInfo")
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return object.mapValues { String(describing: $0) }
+    }
+
+    public static func save(_ form: [String: String], for source: BookSource) {
+        guard let data = try? JSONSerialization.data(withJSONObject: form) else { return }
+        BookSourceRuntimeStore.shared.put(sourceID: source.bookSourceUrl, key: "loginInfo", value: String(decoding: data, as: UTF8.self))
+    }
+
+    /// Runs one button action and returns its completion value as text.
+    public static func run(action: String, source: BookSource, form: [String: String]) async throws -> String {
+        save(form, for: source)
+        let script = loginScript(from: source.loginUrl) + "\n" + action
+        // Login scripts carry whole settings pages, so they get the library budget rather than the rule one.
+        let evaluator = JavaScriptRuleEvaluator(maximumScriptLength: 1_024 * 1_024)
+        let result = try await evaluator.evaluateAsync(
+            script: script,
+            result: .object(form.mapValues(JSONValue.string)),
+            executionContext: .init(baseURL: source.bookSourceUrl, source: source)
+        )
+        return result.value.stringValue
+    }
+}
