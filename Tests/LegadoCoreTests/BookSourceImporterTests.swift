@@ -34,6 +34,31 @@ struct BookSourceImporterTests {
         #expect(sources[0].ruleContent?.content == "@css:article@html")
     }
 
+    @Test func exportedSourcesRoundTripThroughImport() throws {
+        let original = try importer.decode(Data(
+            """
+            [{
+              "bookSourceUrl": "光遇聚合",
+              "bookSourceName": "🔅光遇聚合",
+              "bookSourceGroup": "聚合,番茄",
+              "enabled": true,
+              "jsLib": "function BaseUrl() { return 'https://v1.example.test'; }",
+              "loginUi": "[{\\"name\\":\\"邮箱\\",\\"type\\":\\"text\\"}]",
+              "searchUrl": "<js>key</js>",
+              "ruleSearch": { "bookList": "$.data", "name": "$.book_name" },
+              "customField": "kept"
+            }]
+            """.utf8
+        ))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+
+        let restored = try importer.decode(encoder.encode(original))
+
+        #expect(restored == original)
+        #expect(restored.first?.ruleSearch?.name == "$.book_name")
+    }
+
     @Test func acceptsUTF8BOMAndLossyPrimitiveTypes() throws {
         var data = Data([0xEF, 0xBB, 0xBF])
         data.append(

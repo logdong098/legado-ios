@@ -3,11 +3,13 @@ import UIKit
 
 private final class ReaderLayoutTextView: UITextView {
     var onLayout: ((UITextView) -> Void)?
+    var onEveryLayout: ((UITextView) -> Void)?
     private var reportedSize = CGSize.zero
     private var reportedContentSize = CGSize.zero
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        onEveryLayout?(self)
         guard bounds.width > 0, bounds.height > 0,
               bounds.size != reportedSize || contentSize != reportedContentSize else { return }
         reportedSize = bounds.size
@@ -85,6 +87,9 @@ struct ReaderTextView: UIViewRepresentable {
         view.onLayout = { [weak coordinator = context.coordinator] view in
             coordinator?.reportPage(in: view)
             coordinator?.reportPageRanges(in: view)
+        }
+        view.onEveryLayout = { [weak coordinator = context.coordinator] view in
+            coordinator?.updatePageMask(in: view)
         }
         view.accessibilityIdentifier = "reader.text"
         let effectivePageAnimation = isEInkMode ? 4 : pageAnimation
@@ -281,6 +286,20 @@ struct ReaderTextView: UIViewRepresentable {
         private weak var readerTap: UITapGestureRecognizer?
         private weak var loadingFooter: UIView?
         private var didRequestLoadingCancellation = false
+        private var linePages: [LinePage] = []
+        private var linePagesKey = ""
+        private var pageTailInset: CGFloat = 0
+
+        /// One page of whole lines in text-container coordinates. Paged modes step
+        /// between these instead of whole viewport heights, so no line is split
+        /// across the page edge.
+        private struct LinePage {
+            var top: CGFloat
+            var bottom: CGFloat
+            var glyphRange: NSRange
+        }
+
+        private var usesLinePages: Bool { parent.pageAnimation != 3 }
 
         init(parent: ReaderTextView) { self.parent = parent }
 
@@ -331,7 +350,7 @@ struct ReaderTextView: UIViewRepresentable {
             if !visible {
                 loadingFooter?.removeFromSuperview()
                 loadingFooter = nil
-                view.contentInset.bottom = 0
+                view.contentInset.bottom = pageTailInset
                 didRequestLoadingCancellation = false
                 return
             }
@@ -362,7 +381,7 @@ struct ReaderTextView: UIViewRepresentable {
                 loadingFooter = container
                 footer = container
             }
-            view.contentInset.bottom = 64
+            view.contentInset.bottom = max(64, pageTailInset)
             footer.frame = CGRect(x: 0, y: view.contentSize.height, width: view.bounds.width, height: 52)
         }
 
@@ -421,6 +440,10 @@ struct ReaderTextView: UIViewRepresentable {
                 guard let self, self.layoutGeneration == generation else { return }
                 view.layoutManager.ensureLayout(for: view.textContainer)
                 let glyph = view.layoutManager.glyphIndexForCharacter(at: location)
+                if self.usesLinePages, let index = self.linePageIndex(containingGlyph: glyph, in: view) {
+                    view.setContentOffset(self.offset(of: index, in: view), animated: false)
+                    return
+                }
                 var point = view.layoutManager.boundingRect(
                     forGlyphRange: NSRange(location: glyph, length: 1),
                     in: view.textContainer
@@ -455,7 +478,94 @@ struct ReaderTextView: UIViewRepresentable {
             return (minimum, maximum)
         }
 
+        private func pages(in view: UITextView) -> [LinePage] {
+            guard usesLinePages, !view.text.isEmpty, view.bounds.height > 0 else { return [] }
+            let insets = view.textContainerInset
+            let key = "\(styleKey)|\(view.bounds.size)|\(view.contentSize)|\(insets)|\(view.safeAreaInsets)"
+            if key == linePagesKey { return linePages }
+            // Excludes our own contentInset so the tail inset set below cannot feed back into the height.
+            let systemBottom = view.adjustedContentInset.bottom - view.contentInset.bottom
+            let height = max(view.bounds.height - view.adjustedContentInset.top - systemBottom - insets.top - insets.bottom, 1)
+            let manager = view.layoutManager
+            manager.ensureLayout(for: view.textContainer)
+            var lines: [LinePage] = []
+            manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, used, _, range, _ in
+                lines.append(.init(top: rect.minY, bottom: max(used.maxY, rect.minY + 1), glyphRange: range))
+            }
+            var result: [LinePage] = []
+            var index = 0
+            while index < lines.count {
+                var page = lines[index]
+                if result.isEmpty { page.top = 0 }
+                var next = index + 1
+                while next < lines.count, lines[next].bottom - page.top <= height {
+                    page.bottom = lines[next].bottom
+                    page.glyphRange = NSUnionRange(page.glyphRange, lines[next].glyphRange)
+                    next += 1
+                }
+                result.append(page)
+                index = next
+            }
+            linePages = result
+            linePagesKey = key
+            // The last page usually holds less than a screen; let its offset be reachable.
+            let used = manager.usedRect(for: view.textContainer).maxY
+            let tail = max((result.last?.top ?? 0) + height - used, 0)
+            if abs(tail - pageTailInset) > 0.5 {
+                pageTailInset = tail
+                view.contentInset.bottom = loadingFooter == nil ? tail : max(64, tail)
+            }
+            return result
+        }
+
+        private func offset(of index: Int, in view: UITextView) -> CGPoint {
+            let pages = pages(in: view)
+            guard pages.indices.contains(index) else { return view.contentOffset }
+            return CGPoint(x: 0, y: pages[index].top - view.adjustedContentInset.top)
+        }
+
+        private func currentLinePageIndex(in view: UITextView) -> Int? {
+            let pages = pages(in: view)
+            guard !pages.isEmpty else { return nil }
+            let y = view.contentOffset.y + view.adjustedContentInset.top
+            return pages.lastIndex { $0.top <= y + 1 } ?? 0
+        }
+
+        private func linePageIndex(containingGlyph glyph: Int, in view: UITextView) -> Int? {
+            let pages = pages(in: view)
+            guard !pages.isEmpty else { return nil }
+            return pages.lastIndex { $0.glyphRange.location <= glyph } ?? 0
+        }
+
+        /// Hides partial lines that would otherwise peek into the top and bottom margins.
+        func updatePageMask(in view: UITextView) {
+            guard usesLinePages, loadingFooter == nil,
+                  let index = currentLinePageIndex(in: view) else {
+                if view.layer.mask != nil { view.layer.mask = nil }
+                return
+            }
+            let page = linePages[index]
+            let mask = view.layer.mask ?? {
+                let layer = CALayer()
+                layer.backgroundColor = UIColor.black.cgColor
+                view.layer.mask = layer
+                return layer
+            }()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            mask.frame = CGRect(
+                x: view.bounds.minX,
+                y: view.bounds.minY + view.adjustedContentInset.top + view.textContainerInset.top,
+                width: view.bounds.width,
+                height: page.bottom - page.top + 1
+            )
+            CATransaction.commit()
+        }
+
         private func pageMetrics(for view: UITextView) -> (current: Int, total: Int) {
+            if let index = currentLinePageIndex(in: view) {
+                return (index + 1, linePages.count)
+            }
             let pageHeight = readingViewportHeight(for: view)
             if parent.pageAnimation == 3, currentBodyEnd > currentSectionStart {
                 view.layoutManager.ensureLayout(for: view.textContainer)
@@ -499,7 +609,13 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         func contentCharacter(at offset: CGPoint, in view: UITextView) -> Int {
-            let character = renderedCharacter(at: offset, in: view)
+            var character = renderedCharacter(at: offset, in: view)
+            let pages = pages(in: view)
+            if !pages.isEmpty {
+                let y = offset.y + view.adjustedContentInset.top
+                let page = pages.last { $0.top <= y + 1 } ?? pages[0]
+                character = view.layoutManager.characterIndexForGlyph(at: page.glyphRange.location)
+            }
             return min(max(character - renderedPrefixLength, 0), parent.text.utf16.count)
         }
 
@@ -610,25 +726,9 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             guard !view.text.isEmpty else { return }
-            view.layoutManager.ensureLayout(for: view.textContainer)
-            let pageHeight = readingViewportHeight(for: view)
-            let limits = scrollLimits(for: view)
-            let metrics = pageMetrics(for: view)
             var ranges: [NSRange] = []
-            for page in 0..<metrics.total {
-                let offset = page == metrics.total - 1
-                    ? limits.maximum
-                    : min(limits.minimum + CGFloat(page) * pageHeight, limits.maximum)
-                let rect = CGRect(
-                    x: 0,
-                    y: max(0, offset + view.textContainerInset.top),
-                    width: max(view.textContainer.size.width, 1),
-                    height: pageHeight
-                )
-                let glyphRange = view.layoutManager.glyphRange(
-                    forBoundingRect: rect,
-                    in: view.textContainer
-                )
+            for page in pages(in: view) {
+                let glyphRange = page.glyphRange
                 guard glyphRange.length > 0 else { continue }
                 let characterRange = view.layoutManager.characterRange(
                     forGlyphRange: glyphRange,
@@ -770,16 +870,30 @@ struct ReaderTextView: UIViewRepresentable {
         private func turnPage(_ direction: Int) {
             guard !isTurningPage, let view = textView else { return }
             if isAutoReading { resetAutoReadForPageChange() }
-            let pageHeight = readingViewportHeight(for: view)
-            let (minimum, maximum) = scrollLimits(for: view)
-            let target = min(max(view.contentOffset.y + CGFloat(direction) * pageHeight, minimum), maximum)
-            if direction < 0, view.contentOffset.y <= minimum + 0.5 {
-                parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view))
-                return
-            }
-            if direction > 0, view.contentOffset.y >= maximum - 0.5 {
-                parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
-                return
+            let target: CGFloat
+            if let index = currentLinePageIndex(in: view) {
+                let next = index + direction
+                if next < 0 {
+                    parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view))
+                    return
+                }
+                if next >= linePages.count {
+                    parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
+                    return
+                }
+                target = offset(of: next, in: view).y
+            } else {
+                let pageHeight = readingViewportHeight(for: view)
+                let (minimum, maximum) = scrollLimits(for: view)
+                target = min(max(view.contentOffset.y + CGFloat(direction) * pageHeight, minimum), maximum)
+                if direction < 0, view.contentOffset.y <= minimum + 0.5 {
+                    parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view))
+                    return
+                }
+                if direction > 0, view.contentOffset.y >= maximum - 0.5 {
+                    parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
+                    return
+                }
             }
             isTurningPage = true
             let completion: (Bool) -> Void = { [weak self] _ in self?.isTurningPage = false }
@@ -827,11 +941,17 @@ struct ReaderTextView: UIViewRepresentable {
             lastTimestamp = 0
         }
 
-        private func prepareAutoPage(in view: UITextView) -> Bool {
-            let pageHeight = readingViewportHeight(for: view)
+        private func nextPageOffset(in view: UITextView) -> CGFloat? {
+            if let index = currentLinePageIndex(in: view) {
+                return index + 1 < linePages.count ? offset(of: index + 1, in: view).y : nil
+            }
             let maximum = scrollLimits(for: view).maximum
-            guard view.contentOffset.y < maximum - 0.5 else { return false }
-            let target = min(view.contentOffset.y + pageHeight, maximum)
+            guard view.contentOffset.y < maximum - 0.5 else { return nil }
+            return min(view.contentOffset.y + readingViewportHeight(for: view), maximum)
+        }
+
+        private func prepareAutoPage(in view: UITextView) -> Bool {
+            guard let target = nextPageOffset(in: view) else { return false }
             let originalOffset = view.contentOffset
             isRenderingAutoPage = true
             view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
@@ -887,16 +1007,13 @@ struct ReaderTextView: UIViewRepresentable {
             guard eInkElapsed >= eInkPageInterval else { return }
             eInkElapsed = 0
             eInkPageInterval = secondsPerScreen
-            let pageHeight = readingViewportHeight(for: view)
-            let maximum = scrollLimits(for: view).maximum
-            guard view.contentOffset.y < maximum - 0.5 else {
+            guard let target = nextPageOffset(in: view) else {
                 guard !didReachEnd else { return }
                 didReachEnd = true
                 parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
                 return
             }
             didReachEnd = false
-            let target = min(view.contentOffset.y + pageHeight, maximum)
             view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
         }
 

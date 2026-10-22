@@ -39,6 +39,7 @@ struct ReaderView: View {
     @State private var showsBackgroundPicker = false
     @State private var showsFontImporter = false
     @State private var fontError: String?
+    @State private var downloadingFontID: String?
     @State private var readerJumpPosition: Int?
     @State private var contentSearchQuery = ""
     @State private var readerPosition = 0
@@ -1238,10 +1239,13 @@ struct ReaderView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Button(fontPath.isEmpty ? "选择字体文件" : "更换字体文件", systemImage: "textformat") {
+                    ForEach(ReaderRecommendedFont.all) { font in
+                        recommendedFontRow(font)
+                    }
+                    Button("选择字体文件", systemImage: "textformat") {
                         showsFontImporter = true
                     }
-                    if !fontPath.isEmpty {
+                    if !fontPath.isEmpty, !ReaderRecommendedFont.all.contains(where: { $0.matches(fontPath) }) {
                         HStack {
                             Text("当前字体")
                             Spacer()
@@ -1383,6 +1387,45 @@ struct ReaderView: View {
         }
         .readingPresentationDetents([.medium])
         .readingPresentationDragIndicator()
+    }
+
+    private func recommendedFontRow(_ font: ReaderRecommendedFont) -> some View {
+        Button {
+            selectRecommendedFont(font)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(font.name).foregroundStyle(.primary)
+                    Text(font.detail).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if downloadingFontID == font.id {
+                    ProgressView().controlSize(.small)
+                } else if font.matches(fontPath) {
+                    Image(systemName: "checkmark").foregroundStyle(ReadingTheme.accent)
+                } else if !font.isDownloaded {
+                    Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .disabled(downloadingFontID != nil)
+    }
+
+    private func selectRecommendedFont(_ font: ReaderRecommendedFont) {
+        fontError = nil
+        if let value = font.settingValue {
+            fontPath = value
+            return
+        }
+        downloadingFontID = font.id
+        Task {
+            do {
+                fontPath = try await font.download()
+            } catch {
+                fontError = "\(font.name) 下载失败：\(error.localizedDescription)"
+            }
+            downloadingFontID = nil
+        }
     }
 
     private static let pageAnimationChoices: [(value: Int, title: String, icon: String)] = [

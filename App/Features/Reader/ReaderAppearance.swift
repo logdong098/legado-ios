@@ -116,7 +116,14 @@ enum ReaderFontStore {
         return target.path
     }
 
+    /// Installed iOS fonts are stored as `system:<PostScript name>` instead of a file path.
+    static let systemPrefix = "system:"
+
     static func font(at path: String, size: CGFloat, weight: Int) -> UIFont? {
+        if path.hasPrefix(systemPrefix) {
+            return UIFont(name: String(path.dropFirst(systemPrefix.count)), size: size)
+                .map { styled($0, size: size, weight: weight) }
+        }
         guard !path.isEmpty,
               let provider = CGDataProvider(url: URL(fileURLWithPath: path) as CFURL),
               let graphicsFont = CGFont(provider) else { return nil }
@@ -124,6 +131,10 @@ enum ReaderFontStore {
         guard let postScriptName = graphicsFont.postScriptName else { return nil }
         let name = postScriptName as String
         guard let base = UIFont(name: name, size: size) else { return nil }
+        return styled(base, size: size, weight: weight)
+    }
+
+    private static func styled(_ base: UIFont, size: CGFloat, weight: Int) -> UIFont {
         if weight == 1,
            let descriptor = base.fontDescriptor.withSymbolicTraits(.traitBold) {
             return UIFont(descriptor: descriptor, size: size)
@@ -135,5 +146,68 @@ enum ReaderFontStore {
             return UIFont(descriptor: descriptor, size: size)
         }
         return base
+    }
+}
+
+/// Reading fonts offered in settings: two that ship with iOS and open-source (SIL OFL)
+/// fonts downloaded on demand from their GitHub releases.
+struct ReaderRecommendedFont: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    let systemName: String?
+    let downloadURL: URL?
+    let fileName: String?
+
+    static let all: [ReaderRecommendedFont] = [
+        .init(id: "songti", name: "宋体（默认）", detail: "系统自带，传统书籍风格", systemName: nil, downloadURL: nil, fileName: nil),
+        .init(id: "pingfang", name: "苹方", detail: "系统自带，清晰现代的黑体", systemName: "PingFangSC-Regular", downloadURL: nil, fileName: nil),
+        .init(
+            id: "wenkai-screen", name: "霞鹜文楷 屏幕阅读版", detail: "开源楷体，为屏幕加粗，约 25 MB",
+            systemName: nil,
+            downloadURL: URL(string: "https://github.com/lxgw/LxgwWenKai-Screen/releases/latest/download/LXGWWenKaiScreen.ttf"),
+            fileName: "LXGWWenKaiScreen.ttf"
+        ),
+        .init(
+            id: "neozhisong", name: "霞鹜新致宋", detail: "开源宋体，字形更舒展，约 10 MB",
+            systemName: nil,
+            downloadURL: URL(string: "https://github.com/lxgw/LxgwNeoZhiSong/releases/latest/download/LXGWNeoZhiSong.ttf"),
+            fileName: "LXGWNeoZhiSong.ttf"
+        )
+    ]
+
+    /// The value stored in the `textFont` setting when this font is selected.
+    var settingValue: String? {
+        if let systemName { return ReaderFontStore.systemPrefix + systemName }
+        if let fileName { return isDownloaded ? localURL(fileName).path : nil }
+        return ""
+    }
+
+    var isDownloaded: Bool {
+        guard let fileName else { return true }
+        return FileManager.default.fileExists(atPath: localURL(fileName).path)
+    }
+
+    func matches(_ fontPath: String) -> Bool {
+        if systemName == nil, fileName == nil { return fontPath.isEmpty }
+        if let systemName { return fontPath == ReaderFontStore.systemPrefix + systemName }
+        return fileName.map { URL(fileURLWithPath: fontPath).lastPathComponent == $0 } ?? false
+    }
+
+    func download() async throws -> String {
+        guard let downloadURL, let fileName else { return settingValue ?? "" }
+        let (temporary, response) = try await URLSession.shared.download(from: downloadURL)
+        guard (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? false else {
+            throw URLError(.badServerResponse)
+        }
+        let named = temporary.deletingLastPathComponent().appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: named)
+        try FileManager.default.moveItem(at: temporary, to: named)
+        defer { try? FileManager.default.removeItem(at: named) }
+        return try ReaderFontStore.install(from: named)
+    }
+
+    private func localURL(_ fileName: String) -> URL {
+        ReaderFontStore.directory.appendingPathComponent(fileName)
     }
 }

@@ -17,6 +17,7 @@ struct SourceManagementView: View {
     @State private var isSelecting = false
     @State private var selectedSourceIDs = Set<String>()
     @State private var confirmsBatchDelete = false
+    @State private var exportedSources: SourceExportDocument?
     @AppStorage("bookSourceSort") private var sortMode = "manual"
     @AppStorage("bookSourceSortDescending") private var sortDescending = false
 
@@ -154,6 +155,16 @@ struct SourceManagementView: View {
                         Label("测试书源", systemImage: "checkmark.circle.badge.questionmark")
                     }
                     Button("管理分组", systemImage: "folder.badge.gearshape") { showsGroupManager = true }
+                    Divider()
+                    if isSelecting, !selectedSourceIDs.isEmpty {
+                        Button("导出所选（\(selectedSourceIDs.count)）", systemImage: "square.and.arrow.up") {
+                            exportedSources = .init(sources: library.sources.filter { selectedSourceIDs.contains($0.id) })
+                        }
+                    }
+                    Button("导出全部书源", systemImage: "square.and.arrow.up.on.square") {
+                        exportedSources = .init(sources: library.sources)
+                    }
+                    .disabled(library.sources.isEmpty)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -207,6 +218,12 @@ struct SourceManagementView: View {
         } message: {
             Text("删除后无法恢复，如需再次使用请重新导入。")
         }
+        .fileExporter(
+            isPresented: Binding(get: { exportedSources != nil }, set: { if !$0 { exportedSources = nil } }),
+            document: exportedSources ?? SourceExportDocument(sources: []),
+            contentType: .json,
+            defaultFilename: SourceExportDocument.filename(count: exportedSources?.sources.count ?? 0)
+        ) { _ in exportedSources = nil }
         .sheet(isPresented: $showsNewSource) { SourceEditorView().environmentObject(library) }
         .sheet(isPresented: $showsQRImporter) {
             QRCodeImportView { value in Task { await library.previewInput(value) } }
@@ -819,5 +836,26 @@ private struct CapabilityRow: View {
                 .foregroundStyle(available ? .green : .secondary)
                 .accessibilityLabel(available ? "已配置" : "未配置")
         }
+    }
+}
+
+/// Legado-format JSON array, so a backup can be re-imported here or in Android Legado.
+private struct SourceExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let sources: [BookSource]
+
+    init(sources: [BookSource]) { self.sources = sources }
+    init(configuration: ReadConfiguration) throws { sources = [] }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        return FileWrapper(regularFileWithContents: try encoder.encode(sources))
+    }
+
+    static func filename(count: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmm"
+        return "书源备份-\(count)个-\(formatter.string(from: Date())).json"
     }
 }
