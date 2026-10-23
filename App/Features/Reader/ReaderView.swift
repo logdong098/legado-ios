@@ -18,6 +18,7 @@ struct ReaderView: View {
     @StateObject private var speech = ReaderSpeechController()
     @State private var showsTableOfContents = false
     @State private var showsBookmarks = false
+    @State private var readerToast: String?
     @State private var showsAutoReadControls = false
     @State private var showsStyleControls = false
     @State private var isAutoReading = false
@@ -258,6 +259,22 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showsTableOfContents) { tableOfContents }
         .sheet(isPresented: $showsBookmarks) { bookmarksSheet }
+        .overlay(alignment: .top) {
+            if let readerToast {
+                Text(readerToast)
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 60)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .task(id: readerToast) {
+            guard readerToast != nil else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            withAnimation { readerToast = nil }
+        }
         .sheet(isPresented: $showsAutoReadControls) { autoReadControls }
         .sheet(isPresented: $showsStyleControls) { styleControls }
         .sheet(isPresented: $showsContentSearch) { contentSearchSheet }
@@ -829,6 +846,17 @@ struct ReaderView: View {
         }
     }
 
+    private func saveOffline(source: BookSource, fromStart: Bool, count: Int?) {
+        OfflineDownloadManager.shared.download(
+            book: model.book,
+            source: source,
+            chapterCount: model.chapters.count,
+            from: fromStart ? 0 : model.currentIndex,
+            count: count
+        )
+        readerToast = count.map { "已加入离线缓存：\($0) 章" } ?? (fromStart ? "已加入离线缓存：整本书" : "已加入离线缓存：到结尾")
+    }
+
     private var readerMoreMenu: some View {
         Menu {
             Button("搜索正文", systemImage: "magnifyingglass") {
@@ -846,6 +874,17 @@ struct ReaderView: View {
                     showsReaderMenu = false
                     showsAutoReadControls = true
                 }
+            }
+            if let source = model.currentSource {
+                Menu {
+                    Button("从当前章起 50 章") { saveOffline(source: source, fromStart: false, count: 50) }
+                    Button("从当前章起 200 章") { saveOffline(source: source, fromStart: false, count: 200) }
+                    Button("从当前章到结尾") { saveOffline(source: source, fromStart: false, count: nil) }
+                    Button("整本书") { saveOffline(source: source, fromStart: true, count: nil) }
+                } label: {
+                    Label("缓存书籍", systemImage: "arrow.down.circle")
+                }
+                .disabled(model.chapters.isEmpty)
             }
             Divider()
             Button(resolvedStyle.id == "night" ? "切换为日间" : "切换为夜间", systemImage: resolvedStyle.id == "night" ? "sun.max" : "moon") {

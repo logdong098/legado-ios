@@ -98,7 +98,12 @@ struct SourceRepositoryBrowserView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu("更多", systemImage: "ellipsis.circle") {
-                    Toggle("显示成人内容", isOn: $showsAdult)
+                    // A Toggle inside a toolbar Menu renders greyed out on iOS 26, so use a button.
+                    Button {
+                        showsAdult.toggle()
+                    } label: {
+                        Label("显示成人内容", systemImage: showsAdult ? "checkmark.circle.fill" : "circle")
+                    }
                     if !selectedIDs.isEmpty {
                         Button("取消选择", systemImage: "xmark.circle") { selectedIDs.removeAll() }
                     }

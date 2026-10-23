@@ -49,6 +49,8 @@ final class ReaderViewModel: ObservableObject {
     @Published private(set) var book: Book
     private(set) var chapters: [BookChapter]
     private var source: BookSource?
+    /// The source backing network chapters; nil for local books.
+    var currentSource: BookSource? { source }
     private let localService: LocalBookService
     private let sanitizer = ContentSanitizer()
     private let contentCoordinator: ChapterContentCoordinator
