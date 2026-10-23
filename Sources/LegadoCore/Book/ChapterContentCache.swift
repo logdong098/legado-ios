@@ -53,10 +53,41 @@ public actor ChapterContentCache {
         self.maximumTotalBytes = maximumTotalBytes.map { max($0, Self.maximumEntryBytes) }
     }
 
+    /// Application Support rather than Caches: iOS may purge Caches under storage pressure,
+    /// which would silently drop chapters the user downloaded for offline reading.
     public static func live() -> ChapterContentCache {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        ChapterContentCache(directory: liveDirectory)
+    }
+
+    static let liveDirectory: URL = {
+        let manager = FileManager.default
+        let target = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Legado/Chapters", isDirectory: true)
-        return ChapterContentCache(directory: base)
+        let legacy = manager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Legado/Chapters", isDirectory: true)
+        if !manager.fileExists(atPath: target.path), manager.fileExists(atPath: legacy.path) {
+            try? manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? manager.moveItem(at: legacy, to: target)
+        }
+        return target
+    }()
+
+    /// Books downloaded for offline reading; their chapters are never evicted by `pruneIfNeeded`.
+    public static func setProtectedBooks(_ bookURLs: some Sequence<String>) {
+        let digests = Set(bookURLs.map(digestValue))
+        protectedLock.lock()
+        protectedDigests = digests
+        protectedLock.unlock()
+    }
+
+    private static let protectedLock = NSLock()
+    nonisolated(unsafe) private static var protectedDigests: Set<String> = []
+
+    private static func isProtected(_ file: URL) -> Bool {
+        let digest = String(file.lastPathComponent.prefix { $0 != "-" })
+        protectedLock.lock()
+        defer { protectedLock.unlock() }
+        return protectedDigests.contains(digest)
     }
 
     public func load(bookURL: String, chapterURL: String) throws -> CachedChapterContent? {
@@ -117,9 +148,27 @@ public actor ChapterContentCache {
         return (files.count, files.reduce(0) { $0 + $1.size })
     }
 
+    public func statistics(bookURL: String) throws -> (entries: Int, bytes: Int) {
+        let prefix = digest(bookURL) + "-"
+        let files = try cacheFiles().filter { $0.url.lastPathComponent.hasPrefix(prefix) }
+        return (files.count, files.reduce(0) { $0 + $1.size })
+    }
+
+    public func contains(bookURL: String, chapterURL: String) -> Bool {
+        FileManager.default.fileExists(atPath: fileURL(bookURL: bookURL, chapterURL: chapterURL).path)
+    }
+
+    /// Removes every cached chapter except those of protected (offline) books.
+    public func removeUnprotected() throws {
+        for file in try cacheFiles() where !Self.isProtected(file.url) {
+            try FileManager.default.removeItem(at: file.url)
+        }
+    }
+
     public func pruneIfNeeded() throws {
         let maximumTotalBytes = maximumTotalBytes ?? ApplicationSettingsStore.shared.settings.chapterCacheMB * 1024 * 1024
-        var files = try cacheFiles().sorted { $0.modified < $1.modified }
+        var files = try cacheFiles().filter { !Self.isProtected($0.url) }.sorted { $0.modified < $1.modified }
+        // Offline books do not count toward the reading-cache budget.
         var total = files.reduce(0) { $0 + $1.size }
         while total > maximumTotalBytes, let oldest = files.first {
             try FileManager.default.removeItem(at: oldest.url)
@@ -145,7 +194,9 @@ public actor ChapterContentCache {
         directory.appendingPathComponent("\(digest(bookURL))-\(digest(chapterURL)).json")
     }
 
-    private func digest(_ value: String) -> String {
+    private func digest(_ value: String) -> String { Self.digestValue(value) }
+
+    private static func digestValue(_ value: String) -> String {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -270,6 +321,19 @@ public actor ChapterContentCoordinator {
            cached.sourceID == nil || cached.sourceID == source.id { return false }
         let result = await load(book: book, chapter: chapter, source: source, nextChapterURL: nextChapterURL)
         return !result.report.content.isEmpty
+    }
+
+    /// Fetches the chapter unless it is already cached; returns whether it is cached afterwards.
+    public func ensureCached(
+        book: Book,
+        chapter: BookChapter,
+        source: BookSource,
+        nextChapterURL: String? = nil
+    ) async -> Bool {
+        if await cache.contains(bookURL: book.bookUrl, chapterURL: chapter.url) { return true }
+        let result = await load(book: book, chapter: chapter, source: source, nextChapterURL: nextChapterURL)
+        return !result.report.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (await cache.contains(bookURL: book.bookUrl, chapterURL: chapter.url))
     }
 
     public func invalidate(bookURL: String) async {

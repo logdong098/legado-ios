@@ -50,6 +50,9 @@ struct LegadoApp: App {
                         }
                     }
                     await bookLibrary.load()
+                    await OfflineDownloadManager.shared.start { [sourceLibrary] url in
+                        sourceLibrary.sources.first { $0.bookSourceUrl == url }
+                    }
                     await replaceRuleLibrary.load()
                     await readingActivity.load()
                     await ruleSubscriptions.load()

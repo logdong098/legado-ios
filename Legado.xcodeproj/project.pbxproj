@@ -123,6 +123,10 @@
 		AA1100000000000000000008 = {isa = PBXBuildFile; fileRef = AA2200000000000000000008; };
 		AA1100000000000000000009 = {isa = PBXBuildFile; fileRef = AA2200000000000000000009; };
 		AA1100000000000000000010 = {isa = PBXBuildFile; fileRef = AA2200000000000000000010; };
+		FE1000000000000000000001 /* OfflineDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2000000000000000000001 /* OfflineDownload.swift */; };
+		FE1000000000000000000002 /* SourceRepositoryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2000000000000000000002 /* SourceRepositoryClient.swift */; };
+		FE1000000000000000000003 /* OfflineDownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2000000000000000000003 /* OfflineDownloadManager.swift */; };
+		FE1000000000000000000004 /* SourceRepositoryBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2000000000000000000004 /* SourceRepositoryBrowserView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -245,6 +249,10 @@
 		AA2200000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/Import/QRCodeDecoder.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000009 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderUITests/RuleEditorUITests.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderUITests/LiveReadingFlowUITests.swift; sourceTree = SOURCE_ROOT; };
+		FE2000000000000000000001 /* OfflineDownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineDownload.swift; sourceTree = "<group>"; };
+		FE2000000000000000000002 /* SourceRepositoryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRepositoryClient.swift; sourceTree = "<group>"; };
+		FE2000000000000000000003 /* OfflineDownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineDownloadManager.swift; sourceTree = "<group>"; };
+		FE2000000000000000000004 /* SourceRepositoryBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRepositoryBrowserView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -314,6 +322,7 @@
 		A30000000000000000000002 /* Sources Feature */ = {
 			isa = PBXGroup;
 			children = (
+				FE2000000000000000000004 /* SourceRepositoryBrowserView.swift */,
 				A20000000000000000000003 /* SourceLibraryModel.swift */,
 				A20000000000000000000004 /* SourceManagementView.swift */,
 				A2000000000000000000000D /* SourceDebugView.swift */,
@@ -379,6 +388,7 @@
 		A30000000000000000000008 /* Activity Feature */ = {
 			isa = PBXGroup;
 			children = (
+				FE2000000000000000000003 /* OfflineDownloadManager.swift */,
 				F21000000000000000000001 /* FileManagementView.swift */,
 				A20000000000000000000012 /* ReadingActivityModel.swift */,
 				A20000000000000000000013 /* ReadingHistoryView.swift */,
@@ -432,6 +442,7 @@
 		C30000000000000000000003 /* Import */ = {
 			isa = PBXGroup;
 			children = (
+				FE2000000000000000000002 /* SourceRepositoryClient.swift */,
 				F21000000000000000000004 /* RuleImportInput.swift */,
 				C20000000000000000000004 /* BookSourceValidator.swift */,
 				C20000000000000000000005 /* BookSourceImporter.swift */,
@@ -493,6 +504,7 @@
 		C30000000000000000000008 /* Book */ = {
 			isa = PBXGroup;
 			children = (
+				FE2000000000000000000001 /* OfflineDownload.swift */,
 				C20000000000000000000012 /* NetworkBookService.swift */,
 				C20000000000000000000019 /* ContentSanitizer.swift */,
 				C2000000000000000000001C /* ChapterContentCache.swift */,
@@ -690,6 +702,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FE1000000000000000000004 /* SourceRepositoryBrowserView.swift in Sources */,
+				FE1000000000000000000003 /* OfflineDownloadManager.swift in Sources */,
+				FE1000000000000000000002 /* SourceRepositoryClient.swift in Sources */,
+				FE1000000000000000000001 /* OfflineDownload.swift in Sources */,
 				AA1100000000000000000001 /* SourceEditorView.swift in Sources */,
 				AA1100000000000000000002 /* ReplaceRuleEditorView.swift in Sources */,
 				AA1100000000000000000003 /* SyntaxCodeEditor.swift in Sources */,

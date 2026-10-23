@@ -8,6 +8,7 @@ struct BookDetailView: View {
     @State private var showsSourceSwitch = false
     @State private var showsRemoveConfirmation = false
     @State private var showsTableOfContents = false
+    @ObservedObject private var downloads = OfflineDownloadManager.shared
 
     init(searchBook: SearchBook, source: BookSource) {
         _model = StateObject(wrappedValue: BookDetailViewModel(searchBook: searchBook, source: source))
@@ -34,7 +35,7 @@ struct BookDetailView: View {
                     Divider()
                 }
                 chapterCard
-                if model.isCaching || model.cacheCompleted > 0 { cacheProgressCard }
+                if let task = downloads.task(for: model.book.bookUrl) { offlineCard(task) }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 30)
@@ -74,13 +75,17 @@ struct BookDetailView: View {
                         Label("分享", systemImage: "square.and.arrow.up")
                     }
                     Divider()
-                    Button("缓存接下来 10 章", systemImage: "arrow.down.circle") { model.cacheNextTen() }
-                        .disabled(model.chapters.isEmpty || model.isCaching)
-                    Button("缓存剩余章节", systemImage: "square.and.arrow.down.on.square") { model.cacheRemaining() }
-                        .disabled(model.chapters.isEmpty || model.isCaching)
-                    if model.isCaching {
-                        Divider()
-                        Button("停止缓存", systemImage: "stop.circle", role: .destructive) { model.cancelCaching() }
+                    Menu {
+                        Button("从当前章起 50 章") { saveOffline(fromStart: false, count: 50) }
+                        Button("从当前章起 200 章") { saveOffline(fromStart: false, count: 200) }
+                        Button("从当前章到结尾") { saveOffline(fromStart: false, count: nil) }
+                        Button("整本书") { saveOffline(fromStart: true, count: nil) }
+                    } label: {
+                        Label("离线缓存", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(model.chapters.isEmpty)
+                    if downloads.task(for: model.book.bookUrl)?.isActive == true {
+                        Button("暂停离线缓存", systemImage: "pause.circle") { downloads.pause(model.book.bookUrl) }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -127,22 +132,46 @@ struct BookDetailView: View {
         }
     }
 
-    private var cacheProgressCard: some View {
-        ReadingCard {
+    private func saveOffline(fromStart: Bool, count: Int?) {
+        downloads.download(
+            book: model.book,
+            source: model.source,
+            chapterCount: model.chapters.count,
+            from: fromStart ? 0 : model.book.durChapterIndex,
+            count: count
+        )
+    }
+
+    private func offlineCard(_ task: OfflineDownloadTask) -> some View {
+        let stageDone = downloads.isRunning(task.id) ? downloads.stageProgress[task.id] ?? 0 : 0
+        let done = min(task.cursor - task.startIndex + stageDone, task.totalChapters)
+        return ReadingCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label(model.isCaching ? "正在缓存章节" : "章节缓存完成", systemImage: model.isCaching ? "arrow.down.circle.fill" : "checkmark.circle.fill")
-                        .font(.headline)
+                    Label(
+                        task.isActive ? "正在离线缓存" : task.state == .paused ? "离线缓存已暂停" : "离线缓存完成",
+                        systemImage: task.isActive ? "arrow.down.circle.fill" : task.state == .paused ? "pause.circle.fill" : "checkmark.circle.fill"
+                    )
+                    .font(.headline)
                     Spacer()
-                    Text("\(model.cacheCompleted)/\(model.cacheTotal)")
+                    Text("\(done)/\(task.totalChapters)")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
-                ProgressView(value: Double(model.cacheCompleted), total: Double(max(model.cacheTotal, 1)))
+                ProgressView(value: Double(done), total: Double(max(task.totalChapters, 1)))
                     .tint(ReadingTheme.accent)
-                if model.isCaching {
-                    Button("停止缓存", role: .destructive) { model.cancelCaching() }
-                        .font(.subheadline)
+                if let error = task.lastError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
                 }
+                HStack {
+                    if task.isActive {
+                        Button("暂停") { downloads.pause(task.id) }
+                    } else if !task.isFinished || !task.failedIndices.isEmpty {
+                        Button(task.isFinished ? "重试失败章节" : "继续") { downloads.resume(task.id) }
+                    }
+                    Spacer()
+                    NavigationLink("缓存管理") { CacheManagementView() }
+                }
+                .font(.subheadline)
             }
         }
     }
