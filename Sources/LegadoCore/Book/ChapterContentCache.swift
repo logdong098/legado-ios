@@ -332,8 +332,8 @@ public actor ChapterContentCoordinator {
     ) async -> Bool {
         if await cache.contains(bookURL: book.bookUrl, chapterURL: chapter.url) { return true }
         let result = await load(book: book, chapter: chapter, source: source, nextChapterURL: nextChapterURL)
-        return !result.report.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (await cache.contains(bookURL: book.bookUrl, chapterURL: chapter.url))
+        guard !result.report.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return await cache.contains(bookURL: book.bookUrl, chapterURL: chapter.url)
     }
 
     public func invalidate(bookURL: String) async {
